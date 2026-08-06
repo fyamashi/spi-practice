@@ -165,6 +165,7 @@
   .choice.selected .bubble{ background:var(--ink); color:#fff; }
 
   .nav-row{ display:flex; justify-content:space-between; margin-top:24px; align-items:center; }
+  .nav-row-right{ display:flex; gap:10px; }
   .btn{ border:none; border-radius:2px; padding:11px 22px; font-size:13.5px; font-weight:600; cursor:pointer; font-family:inherit; }
   .btn-primary{ background:var(--ink); color:#fff; }
   .btn-primary:disabled{ background:#B9BEC6; cursor:not-allowed; }
@@ -660,7 +661,7 @@ function startQuiz(opts){
   }
   state.questions = pool;
   state.idx = 0;
-  state.answers = [];
+  state.answers = new Array(pool.length).fill(null);
   state.catLabel = label;
   renderQuiz();
 }
@@ -671,6 +672,8 @@ function renderQuiz(){
   const q = state.questions[state.idx];
   const pct = Math.round((state.idx/total)*100);
   const isLast = state.idx === total-1;
+  const isFirst = state.idx === 0;
+  const existing = state.answers[state.idx];
 
   app.innerHTML = `
     <div class="quiz-head">
@@ -682,7 +685,7 @@ function renderQuiz(){
     <div class="q-text">${escapeHtml(q.q)}</div>
     <div class="choices" id="choices">
       ${q.choices.map((c,i)=>`
-        <button class="choice" data-i="${i}">
+        <button class="choice${existing && existing.chosen===i ? ' selected' : ''}" data-i="${i}">
           <span class="bubble">${["A","B","C","D"][i]}</span>
           <span>${escapeHtml(c)}</span>
         </button>`).join("")}
@@ -690,11 +693,14 @@ function renderQuiz(){
     <div class="select-warn" id="selectWarn"></div>
     <div class="nav-row">
       <button class="btn btn-ghost" id="quitBtn">メニューに戻る</button>
-      <button class="btn btn-primary" id="nextBtn">${isLast ? "回答を終了" : "次へ"}</button>
+      <div class="nav-row-right">
+        ${isFirst ? "" : `<button class="btn btn-ghost" id="prevBtn">前へ</button>`}
+        <button class="btn btn-primary" id="nextBtn">${isLast ? "回答を終了" : "次へ"}</button>
+      </div>
     </div>
   `;
 
-  let chosen = null;
+  let chosen = existing ? existing.chosen : null;
   const choiceBtns = app.querySelectorAll(".choice");
   choiceBtns.forEach(btn=>{
     btn.addEventListener("click", ()=>{
@@ -705,15 +711,28 @@ function renderQuiz(){
     });
   });
 
+  function saveCurrentAnswer(){
+    if(chosen === null) return;
+    state.answers[state.idx] = {
+      q: q.q, choices:q.choices, chosen, correctIndex:q.answer,
+      correct: chosen === q.answer, catId:q.catId, catName:q.catName, exp:q.exp
+    };
+  }
+
+  if(!isFirst){
+    document.getElementById("prevBtn").addEventListener("click", ()=>{
+      saveCurrentAnswer();
+      state.idx--;
+      renderQuiz();
+    });
+  }
+
   document.getElementById("nextBtn").addEventListener("click", async (e)=>{
     if(chosen === null){
       document.getElementById("selectWarn").textContent = "選択肢を選んでください。";
       return;
     }
-    state.answers.push({
-      q: q.q, choices:q.choices, chosen, correctIndex:q.answer,
-      correct: chosen === q.answer, catId:q.catId, catName:q.catName, exp:q.exp
-    });
+    saveCurrentAnswer();
     if(isLast){
       e.target.disabled = true;
       e.target.textContent = "採点しています…";
