@@ -29,13 +29,23 @@
     padding:24px 14px 80px;
   }
   .sheet{ width:100%; max-width:760px; }
-  header{ text-align:center; margin-bottom:22px; }
+  header{ text-align:center; margin-bottom:22px; position:relative; }
   header .eyebrow{ letter-spacing:0.35em; font-size:11px; color:var(--gold); font-weight:600; }
   header h1{
     font-family:"Yu Mincho","Hiragino Mincho ProN","Noto Serif JP",serif;
     font-size:28px; font-weight:600; margin:6px 0 4px; letter-spacing:0.06em;
   }
   header p{ margin:0; font-size:12.5px; color:var(--ink-soft); }
+  .ranking-header-btn{
+    position:absolute; top:48px; right:0;
+    background:var(--ink); color:#fff; border:none; border-radius:2px;
+    padding:9px 16px; font-size:12px; font-weight:600; letter-spacing:0.05em;
+    cursor:pointer; font-family:inherit;
+  }
+  .ranking-header-btn:hover{ background:#33415a; }
+  @media(max-width:480px){
+    .ranking-header-btn{ position:static; display:block; margin:0 auto 14px; }
+  }
   .card{
     background:var(--card);
     border:1px solid var(--line);
@@ -135,6 +145,12 @@
   .cat-btn .name{ font-size:14px; font-weight:600; }
   .cat-btn .desc{ display:block; font-size:11px; color:var(--ink-soft); margin-top:3px; line-height:1.5; }
   .cat-btn .stat{ display:block; font-size:10.5px; color:var(--gold); margin-top:5px; }
+  .cat-btn.heat-1{ background:#FCE8EC; border-color:#F3C4D0; }
+  .cat-btn.heat-2{ background:#F8BFD0; border-color:#EF9AB4; }
+  .cat-btn.heat-3{ background:#EE7FA0; border-color:#E15C85; }
+  .cat-btn.heat-3 .name, .cat-btn.heat-3 .desc{ color:#fff; }
+  .cat-btn.heat-3 .stat{ color:#fff0f4; }
+  .cat-btn.heat-2:hover, .cat-btn.heat-3:hover, .cat-btn.heat-1:hover{ border-color:var(--ink); }
 
   /* ---- 出題画面 ---- */
   .quiz-head{
@@ -212,6 +228,7 @@
 <body>
 <div class="sheet">
   <header>
+    <button class="ranking-header-btn" id="headerRankingBtn">ランキング</button>
     <div class="eyebrow">APTITUDE TEST PRACTICE</div>
     <h1>SPI対策問題集</h1>
     <p>ニックネームで記録しながら、弱点を見つけよう</p>
@@ -269,13 +286,56 @@ async function fetchRemoteCategories(nickname){
 async function saveRemoteCategories(nickname, categories){
   try{
     const key = sanitizeKey(nickname);
-    const res = await fetch(`${FIREBASE.DB_URL}/students/${key}/categories.json`, {
-      method:"PUT",
+    const res = await fetch(`${FIREBASE.DB_URL}/students/${key}.json`, {
+      method:"PATCH",
       headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify(categories)
+      body: JSON.stringify({ categories, nickname })
     });
     return res.ok;
   }catch(e){ return false; }
+}
+async function fetchAllStudents(){
+  try{
+    const res = await fetch(`${FIREBASE.DB_URL}/students.json`);
+    if(!res.ok) return {};
+    const data = await res.json();
+    return data || {};
+  }catch(e){ return {}; }
+}
+function decodeStudentKey(key){
+  try{ return decodeURIComponent(key); }catch(e){ return key; }
+}
+/* 言語・非言語それぞれについて、30問以上解いたニックネームを正答率順に最大20名まで抽出する */
+function computeGroupRankings(allStudents){
+  const groups = { "言語": [], "非言語": [] };
+  Object.keys(allStudents || {}).forEach(key=>{
+    const entry = allStudents[key] || {};
+    const nickname = entry.nickname || decodeStudentKey(key);
+    const cats = entry.categories || {};
+    const totals = { "言語": {attempted:0, correct:0}, "非言語": {attempted:0, correct:0} };
+    Object.keys(cats).forEach(catId=>{
+      const meta = CAT_META[catId];
+      if(!meta) return;
+      const s = cats[catId];
+      totals[meta.group].attempted += s.attempted || 0;
+      totals[meta.group].correct += s.correct || 0;
+    });
+    ["言語","非言語"].forEach(g=>{
+      if(totals[g].attempted>=30){
+        groups[g].push({
+          nickname,
+          attempted: totals[g].attempted,
+          correct: totals[g].correct,
+          pct: Math.round((totals[g].correct/totals[g].attempted)*100)
+        });
+      }
+    });
+  });
+  ["言語","非言語"].forEach(g=>{
+    groups[g].sort((a,b)=> b.pct-a.pct || b.attempted-a.attempted);
+    groups[g] = groups[g].slice(0,20);
+  });
+  return groups;
 }
 /* 現在のカテゴリ別成績を取得する(オンライン同期が有効なら常にサーバーが正) */
 async function getStats(nickname){
@@ -325,6 +385,12 @@ function shuffle(arr){
 }
 function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
+}
+function getHeatClass(attempted){
+  if(attempted>=100) return "heat-3";
+  if(attempted>=50) return "heat-2";
+  if(attempted>=10) return "heat-1";
+  return "";
 }
 
 /* ---- ログイン画面 ---- */
@@ -395,8 +461,10 @@ async function renderMenu(){
     html += `<div class="group-title"><span class="tag">${g}</span>項目を選んでください</div><div class="cat-grid">`;
     QUIZ_DATA.filter(c=>c.group===g).forEach(c=>{
       const stat = categories[c.id];
+      const attempted = stat ? stat.attempted : 0;
       const statHtml = stat ? `直近までの正答率 ${Math.round((stat.correct/stat.attempted)*100)}%(${stat.correct}/${stat.attempted}問)` : "";
-      html += `<button class="cat-btn" data-cat="${c.id}">
+      const heatClass = getHeatClass(attempted);
+      html += `<button class="cat-btn ${heatClass}" data-cat="${c.id}">
         <span class="name">${c.name}</span>
         <span class="desc">${c.desc}</span>
         ${statHtml ? `<span class="stat">${statHtml}</span>` : ""}
@@ -557,6 +625,53 @@ function renderResult(){
 
   document.getElementById("backMenuBtn").addEventListener("click", renderMenu);
 }
+
+/* ---- ランキング画面 ---- */
+async function renderRanking(){
+  app.innerHTML = `<div style="text-align:center; padding:50px 0; color:var(--ink-soft); font-size:13px;">読み込み中…</div>`;
+
+  const backTo = state.nickname ? renderMenu : renderLogin;
+
+  if(!isOnlineSyncEnabled()){
+    app.innerHTML = `
+      <div class="login-wrap">
+        <p class="lead">ランキング機能を利用するには、オンライン同期(Firebase)の設定が必要です。</p>
+        <button class="btn btn-ghost" id="backBtn" style="width:100%;">戻る</button>
+      </div>
+    `;
+    document.getElementById("backBtn").addEventListener("click", backTo);
+    return;
+  }
+
+  const allStudents = await fetchAllStudents();
+  const groups = computeGroupRankings(allStudents);
+
+  function renderList(list){
+    if(list.length===0) return `<div class="analysis-empty">30問以上解いた人がまだいません。</div>`;
+    return list.map((x,i)=>`
+      <div class="analysis-row">
+        <span>${i+1}位　${escapeHtml(x.nickname)}</span>
+        <span>${x.pct}%(${x.correct}/${x.attempted})</span>
+      </div>`).join("");
+  }
+
+  app.innerHTML = `
+    <div class="user-bar">
+      <span><b>ランキング</b><br><span style="font-size:10.5px;">各分野で30問以上解いた人が対象・正答率順に最大20名</span></span>
+      <button id="backBtn">戻る</button>
+    </div>
+    <div class="analysis-box">
+      <div class="analysis-title">言語 正答率ランキング</div>
+      ${renderList(groups["言語"])}
+    </div>
+    <div class="analysis-box">
+      <div class="analysis-title">非言語 正答率ランキング</div>
+      ${renderList(groups["非言語"])}
+    </div>
+  `;
+  document.getElementById("backBtn").addEventListener("click", backTo);
+}
+document.getElementById("headerRankingBtn").addEventListener("click", renderRanking);
 
 renderLogin();
 </script>
