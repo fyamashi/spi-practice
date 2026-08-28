@@ -269,7 +269,10 @@ function saveDB(db){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }catch(e){}
 }
 function sanitizeKey(nickname){
-  return encodeURIComponent(nickname.trim()).replace(/[.#$\[\]%]/g, "_");
+  /* Firebaseのキーで実際に使用できない文字(. $ # [ ] /)のみを置換する。
+     以前は"%"も置換対象に含めていたため、encodeURIComponent()による
+     日本語のパーセントエンコードが壊れ、文字化けの原因になっていた。 */
+  return encodeURIComponent(nickname.trim()).replace(/[.#$\[\]/]/g, "_");
 }
 function isOnlineSyncEnabled(){
   return !!FIREBASE.DB_URL;
@@ -303,6 +306,16 @@ async function fetchAllStudents(){
   }catch(e){ return {}; }
 }
 function decodeStudentKey(key){
+  /* 旧バージョンのsanitizeKeyは"%"を"_"に置き換えていたため、
+     日本語などのニックネームが「_E3_81...」のような形で壊れて保存されている場合がある。
+     これは規則的な変換だったため、"_XX"(アンダースコア+16進数2桁)を
+     "%XX"に戻してからデコードすれば、元のニックネームを復元できる。 */
+  if(/(_[0-9A-Fa-f]{2}){2,}/.test(key)){
+    try{
+      const restored = key.replace(/_([0-9A-Fa-f]{2})/g, "%$1");
+      return decodeURIComponent(restored);
+    }catch(e){ /* 復元できなければ通常のデコードにフォールバック */ }
+  }
   try{ return decodeURIComponent(key); }catch(e){ return key; }
 }
 /* 言語・非言語それぞれについて、30問以上解いたニックネームを正答率順に最大20名まで抽出する */
