@@ -222,6 +222,34 @@
     border-radius:2px; padding:10px 12px; margin-top:6px;
   }
 
+  /* ---- 模擬試験 ---- */
+  .mock-wrap{ margin-bottom:22px; }
+  .mock-btn{
+    width:100%; background:var(--gold); color:#fff; border:none; border-radius:2px;
+    padding:14px; font-size:14px; font-weight:700; letter-spacing:0.08em; cursor:pointer; font-family:inherit;
+  }
+  .mock-btn:hover{ background:#876a2d; }
+  .mock-panel{ margin-top:10px; background:#fff; border:1px solid var(--line); border-radius:2px; padding:14px; }
+  .mock-note{ font-size:11.5px; color:var(--ink-soft); line-height:1.7; margin-bottom:10px; }
+  .mock-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media(max-width:480px){ .mock-grid{ grid-template-columns:1fr; } }
+  .mock-opt{
+    background:var(--card); border:1px solid var(--gold); color:var(--ink); border-radius:2px;
+    padding:12px 10px; font-size:13.5px; font-weight:600; cursor:pointer; font-family:inherit;
+  }
+  .mock-opt:hover{ background:#F3EAD3; }
+  .mock-bar{
+    position:sticky; top:0; z-index:10; background:var(--card);
+    display:flex; justify-content:space-between; align-items:center;
+    padding:10px 0; margin:-6px 0 14px; border-bottom:1px solid var(--line);
+  }
+  .mock-timer{ font-size:20px; font-weight:700; font-variant-numeric:tabular-nums; color:var(--ink); }
+  .mock-timer.warn{ color:var(--red); }
+  .mock-answered{ font-size:12px; color:var(--ink-soft); }
+  .mock-info{ font-size:13px; line-height:1.9; color:var(--ink-soft); margin-bottom:18px; }
+  .mock-timeup{ color:var(--red); font-weight:700; }
+  .review-head .mark.na{ background:#9AA0A8; font-size:11px; }
+
   .hidden{ display:none !important; }
 </style>
 </head>
@@ -389,7 +417,7 @@ function computeAnalysisFromCategories(cats){
 
 /* ========================= アプリ本体 ========================= */
 const app = document.getElementById("app");
-let state = { nickname:"", questions:[], idx:0, answers:[], catLabel:"" };
+let state = { nickname:"", questions:[], idx:0, answers:[], catLabel:"", mock:null, mockResult:null };
 
 function shuffle(arr){
   const a = arr.slice();
@@ -408,6 +436,7 @@ function getHeatClass(attempted){
 
 /* ---- ログイン画面 ---- */
 function renderLogin(){
+  abortMock();
   const lastNick = localStorage.getItem(LAST_NICK_KEY) || "";
   app.innerHTML = `
     <div class="login-wrap">
@@ -435,6 +464,7 @@ function renderLogin(){
 
 /* ---- メニュー画面 ---- */
 async function renderMenu(){
+  abortMock();
   app.innerHTML = `<div style="text-align:center; padding:50px 0; color:var(--ink-soft); font-size:13px;">読み込み中…</div>`;
   const categories = await getStats(state.nickname);
   const analysis = computeAnalysisFromCategories(categories);
@@ -464,6 +494,15 @@ async function renderMenu(){
       <div class="analysis-title">あなたの傾向</div>
       ${analysisHtml}
     </div>
+    <div class="mock-wrap">
+      <button class="mock-btn" id="mockToggleBtn">模擬試験</button>
+      <div class="mock-panel hidden" id="mockPanel">
+        <div class="mock-note">制限時間つきの模擬試験です。時間になると自動で終了し、採点されます。回答した問題は成績(得意・苦手の傾向やランキング)にも反映されます。</div>
+        <div class="mock-grid">
+          ${MOCK_EXAMS.map((e,i)=>`<button class="mock-opt" data-i="${i}">${mockLabel(e)}</button>`).join("")}
+        </div>
+      </div>
+    </div>
     <div class="random-row">
       <button class="random-btn" id="randLang">言語ランダム(10問)</button>
       <button class="random-btn nonlang" id="randNonlang">非言語ランダム(10問)</button>
@@ -489,6 +528,17 @@ async function renderMenu(){
   app.innerHTML = html;
 
   document.getElementById("changeNickBtn").addEventListener("click", renderLogin);
+  document.getElementById("mockToggleBtn").addEventListener("click", ()=>{
+    document.getElementById("mockPanel").classList.toggle("hidden");
+  });
+  app.querySelectorAll(".mock-opt").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const e = MOCK_EXAMS[parseInt(btn.dataset.i)];
+      if(confirm(`${mockLabel(e)}を開始します。\n制限時間は${e.minutes}分です。開始するとすぐに時間が進みます。よろしいですか?`)){
+        startMock(parseInt(btn.dataset.i));
+      }
+    });
+  });
   document.getElementById("randLang").addEventListener("click", ()=>startQuiz({ group:"言語", random:true }));
   document.getElementById("randNonlang").addEventListener("click", ()=>startQuiz({ group:"非言語", random:true }));
   app.querySelectorAll(".cat-btn").forEach(btn=>{
@@ -496,8 +546,131 @@ async function renderMenu(){
   });
 }
 
+/* ---- 模擬試験 ---- */
+const MOCK_EXAMS = [
+  { group:"言語",   minutes:6,  count:20 },
+  { group:"言語",   minutes:12, count:40 },
+  { group:"非言語", minutes:10, count:10 },
+  { group:"非言語", minutes:20, count:20 }
+];
+function mockLabel(e){ return `模擬試験　${e.group} ${e.minutes}分${e.count}問`; }
+
+const MOCK_SEEN_KEY = "spiMockSeen_v1";
+function loadMockSeen(){
+  try{ return JSON.parse(localStorage.getItem(MOCK_SEEN_KEY)) || {}; }catch(e){ return {}; }
+}
+function saveMockSeen(obj){
+  try{ localStorage.setItem(MOCK_SEEN_KEY, JSON.stringify(obj)); }catch(e){}
+}
+function hashStr(s){
+  let h = 5381;
+  for(let i=0;i<s.length;i++){ h = ((h<<5)+h+s.charCodeAt(i))|0; }
+  return (h>>>0).toString(36);
+}
+function formatMMSS(sec){
+  const m = Math.floor(sec/60), s = sec%60;
+  return String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+}
+
+/* 分野内の全問題から、そのニックネームがまだ模擬試験で出会っていない問題を優先して出題する。
+   全問題を出し切ったら履歴をリセットして次の周回に入る。 */
+function pickMockQuestions(group, count){
+  const pool = [];
+  QUIZ_DATA.filter(c=>c.group===group).forEach(c=>{
+    c.questions.forEach(q=> pool.push({ ...q, catId:c.id, catName:c.name, uid:hashStr(c.id+"|"+q.q) }));
+  });
+  const all = loadMockSeen();
+  const userSeen = (all[state.nickname] && all[state.nickname][group]) || [];
+  const seenSet = new Set(userSeen);
+  const unseen = pool.filter(p=>!seenSet.has(p.uid));
+  const seen = pool.filter(p=>seenSet.has(p.uid));
+  let picked, newSeen;
+  if(unseen.length >= count){
+    picked = shuffle(unseen).slice(0, count);
+    newSeen = userSeen.concat(picked.map(p=>p.uid));
+  } else {
+    const fill = shuffle(seen).slice(0, count - unseen.length);
+    picked = unseen.concat(fill);
+    newSeen = fill.map(p=>p.uid);
+  }
+  all[state.nickname] = all[state.nickname] || {};
+  all[state.nickname][group] = newSeen;
+  saveMockSeen(all);
+  return shuffle(picked);
+}
+
+function mockRemainingSec(){
+  if(!state.mock) return 0;
+  return Math.max(0, Math.ceil((state.mock.endAt - Date.now())/1000));
+}
+function mockExpired(){
+  return !!state.mock && Date.now() >= state.mock.endAt;
+}
+function stopMockTimer(){
+  if(state.mock && state.mock.timerId){ clearInterval(state.mock.timerId); state.mock.timerId = null; }
+}
+function abortMock(){
+  stopMockTimer();
+  state.mock = null;
+}
+function tickMock(){
+  if(!state.mock) return;
+  const remain = mockRemainingSec();
+  const el = document.getElementById("mockTimer");
+  if(el){
+    el.textContent = "残り " + formatMMSS(remain);
+    el.classList.toggle("warn", remain <= 60);
+  }
+  if(mockExpired()) finishMock(true);
+}
+function startMock(i){
+  abortMock();
+  const exam = MOCK_EXAMS[i];
+  const picked = pickMockQuestions(exam.group, exam.count);
+  const now = Date.now();
+  state.questions = picked;
+  state.idx = 0;
+  state.answers = new Array(picked.length).fill(null);
+  state.catLabel = mockLabel(exam);
+  state.mockResult = null;
+  state.mock = {
+    label: state.catLabel,
+    limitSec: exam.minutes*60,
+    startAt: now,
+    endAt: now + exam.minutes*60*1000,
+    timerId: null,
+    finishing: false
+  };
+  renderQuiz();
+  state.mock.timerId = setInterval(tickMock, 250);
+}
+async function finishMock(timedOut){
+  if(!state.mock || state.mock.finishing) return;
+  state.mock.finishing = true;
+  stopMockTimer();
+  const m = state.mock;
+  const usedSec = timedOut ? m.limitSec : Math.min(m.limitSec, Math.round((Date.now()-m.startAt)/1000));
+  state.answers = state.questions.map((q,i)=> state.answers[i] || {
+    q:q.q, choices:q.choices, chosen:null, correctIndex:q.answer,
+    correct:false, catId:q.catId, catName:q.catName, exp:q.exp
+  });
+  const answered = state.answers.filter(a=>a.chosen !== null);
+  state.mockResult = {
+    label: m.label, limitSec: m.limitSec, usedSec, timedOut,
+    unanswered: state.answers.length - answered.length
+  };
+  app.innerHTML = `<div style="text-align:center; padding:50px 0; color:var(--ink-soft); font-size:13px;">${timedOut ? "時間切れです。採点しています…" : "採点しています…"}</div>`;
+  if(answered.length > 0){
+    await recordResults(state.nickname, answered.map(a=>({ catId:a.catId, correct:a.correct })));
+  }
+  state.mock = null;
+  renderResult();
+}
+
 /* ---- 出題開始 ---- */
 function startQuiz(opts){
+  abortMock();
+  state.mockResult = null;
   let pool = [];
   let label = "";
   if(opts.random){
@@ -526,8 +699,17 @@ function renderQuiz(){
   const isLast = state.idx === total-1;
   const isFirst = state.idx === 0;
   const existing = state.answers[state.idx];
+  const isMock = !!state.mock;
+  const answeredCount = () => state.answers.filter(Boolean).length;
+
+  const mockBarHtml = isMock ? `
+    <div class="mock-bar">
+      <span class="mock-timer${mockRemainingSec() <= 60 ? ' warn' : ''}" id="mockTimer">残り ${formatMMSS(mockRemainingSec())}</span>
+      <span class="mock-answered" id="mockAnswered">回答済み ${answeredCount()} / ${total}</span>
+    </div>` : "";
 
   app.innerHTML = `
+    ${mockBarHtml}
     <div class="quiz-head">
       <span class="cat-label">${escapeHtml(state.catLabel)}</span>
       <span>${state.idx+1} / ${total} 問</span>
@@ -544,7 +726,7 @@ function renderQuiz(){
     </div>
     <div class="select-warn" id="selectWarn"></div>
     <div class="nav-row">
-      <button class="btn btn-ghost" id="quitBtn">メニューに戻る</button>
+      <button class="btn btn-ghost" id="quitBtn">${isMock ? "中止する" : "メニューに戻る"}</button>
       <div class="nav-row-right">
         ${isFirst ? "" : `<button class="btn btn-ghost" id="prevBtn">前へ</button>`}
         <button class="btn btn-primary" id="nextBtn">${isLast ? "回答を終了" : "次へ"}</button>
@@ -556,10 +738,16 @@ function renderQuiz(){
   const choiceBtns = app.querySelectorAll(".choice");
   choiceBtns.forEach(btn=>{
     btn.addEventListener("click", ()=>{
+      if(isMock && mockExpired()){ finishMock(true); return; }
       chosen = parseInt(btn.dataset.i);
       choiceBtns.forEach(b=>b.classList.remove("selected"));
       btn.classList.add("selected");
       document.getElementById("selectWarn").textContent = "";
+      saveCurrentAnswer();   // 選んだ時点で保存(時間切れで強制終了されても反映されるように)
+      if(isMock){
+        const el = document.getElementById("mockAnswered");
+        if(el) el.textContent = `回答済み ${answeredCount()} / ${total}`;
+      }
     });
   });
 
@@ -573,6 +761,7 @@ function renderQuiz(){
 
   if(!isFirst){
     document.getElementById("prevBtn").addEventListener("click", ()=>{
+      if(isMock && mockExpired()){ finishMock(true); return; }
       saveCurrentAnswer();
       state.idx--;
       renderQuiz();
@@ -580,6 +769,20 @@ function renderQuiz(){
   }
 
   document.getElementById("nextBtn").addEventListener("click", async (e)=>{
+    if(isMock){
+      if(mockExpired()){ finishMock(true); return; }
+      saveCurrentAnswer();
+      if(isLast){
+        const unanswered = total - answeredCount();
+        if(unanswered > 0 && !confirm(`未回答の問題が${unanswered}問あります。このまま終了して採点しますか?`)) return;
+        e.target.disabled = true;
+        e.target.textContent = "採点しています…";
+        await finishMock(false);
+      } else {
+        state.idx++; renderQuiz();   // 模擬試験では未回答のまま次へ進める
+      }
+      return;
+    }
     if(chosen === null){
       document.getElementById("selectWarn").textContent = "選択肢を選んでください。";
       return;
@@ -594,7 +797,13 @@ function renderQuiz(){
     }
   });
 
-  document.getElementById("quitBtn").addEventListener("click", renderMenu);
+  document.getElementById("quitBtn").addEventListener("click", ()=>{
+    if(isMock){
+      if(!confirm("模擬試験を中止してメニューに戻りますか?(この模擬試験の結果は記録されません)")) return;
+      abortMock();
+    }
+    renderMenu();
+  });
 }
 
 async function finishQuiz(){
@@ -606,6 +815,16 @@ async function finishQuiz(){
 function renderResult(){
   const total = state.answers.length;
   const correctCount = state.answers.filter(a=>a.correct).length;
+  const mr = state.mockResult;
+  const isMock = !!mr;
+  const showCat = isMock || state.catLabel.indexOf("ランダム") > -1;
+
+  const mockInfoHtml = isMock ? `
+    <div class="mock-info">
+      ${mr.timedOut ? '<div class="mock-timeup">時間切れのため終了し、採点しました</div>' : ''}
+      <div>制限時間 ${formatMMSS(mr.limitSec)} ／ 所要時間 ${formatMMSS(mr.usedSec)}</div>
+      <div>回答 ${total - mr.unanswered}問 ／ 未回答 ${mr.unanswered}問 ／ 正答率 ${Math.round(correctCount/total*100)}%</div>
+    </div>` : "";
 
   app.innerHTML = `
     <div class="result-wrap">
@@ -614,24 +833,27 @@ function renderResult(){
         <div class="score-word">CHECKED</div>
       </div>
       <div class="result-cat">「${escapeHtml(state.catLabel)}」正解数 ${correctCount}/${total}</div>
+      ${mockInfoHtml}
       <div class="result-actions">
         <button class="btn btn-primary" id="backMenuBtn">メニューに戻る</button>
       </div>
       <div class="review-list">
-        ${state.answers.map((a,i)=>`
+        ${state.answers.map((a,i)=>{
+          const unanswered = a.chosen === null;
+          return `
           <div class="review-item">
             <div class="review-head">
-              <span class="mark ${a.correct ? 'ok' : 'ng'}">${a.correct ? '○' : '×'}</span>
-              <span class="qlabel">問${i+1}${state.catLabel.indexOf("ランダム")>-1 ? "（"+a.catName+"）" : ""}</span>
+              <span class="mark ${unanswered ? 'na' : (a.correct ? 'ok' : 'ng')}">${unanswered ? '未' : (a.correct ? '○' : '×')}</span>
+              <span class="qlabel">問${i+1}${showCat ? "（"+escapeHtml(a.catName)+"）" : ""}</span>
             </div>
             <div class="review-q">${escapeHtml(a.q)}</div>
             <div class="review-ans">
-              <span class="you">あなたの回答: ${["A","B","C","D"][a.chosen]}. ${escapeHtml(a.choices[a.chosen])}</span><br>
+              <span class="you">あなたの回答: ${unanswered ? "未回答" : ["A","B","C","D"][a.chosen] + ". " + escapeHtml(a.choices[a.chosen])}</span><br>
               正解: ${["A","B","C","D"][a.correctIndex]}. ${escapeHtml(a.choices[a.correctIndex])}
             </div>
             <div class="review-exp">${escapeHtml(a.exp)}</div>
-          </div>
-        `).join("")}
+          </div>`;
+        }).join("")}
       </div>
     </div>
   `;
@@ -684,7 +906,12 @@ async function renderRanking(){
   `;
   document.getElementById("backBtn").addEventListener("click", backTo);
 }
-document.getElementById("headerRankingBtn").addEventListener("click", renderRanking);
+document.getElementById("headerRankingBtn").addEventListener("click", ()=>{
+  if(state.mock && !confirm("模擬試験の途中です。中止してランキングを表示しますか?(この模擬試験の結果は記録されません)")) return;
+  abortMock();
+  renderRanking();
+});
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) tickMock(); });
 
 renderLogin();
 </script>
